@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChordTab — 音楽データからギターのコード譜を作る</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f5f0; --panel: #ffffff; --ink: #24211c; --muted: #6f695e; --line: #ddd7ca;
+    --accent: #b4481f; --accent-ink: #ffffff; --accent-soft: #f6e3d9; --chord: #1f2a44; --lyric: #24211c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #191815; --panel: #24221e; --ink: #ece7dc; --muted: #a39c8e; --line: #3c3932;
+      --accent: #e8794b; --accent-ink: #1b1209; --accent-soft: #43291c; --chord: #bcd0f5; --lyric: #ece7dc; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 28px 20px 130px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: .01em; }
+  .lead { color: var(--muted); margin: 4px 0 20px; }
+  button, select, textarea { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, #drop:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+
+  #drop { display: block; border: 2px dashed var(--line); border-radius: 14px; background: var(--panel);
+    padding: 26px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop:hover, #drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  #drop strong { display: block; font-size: 17px; margin-bottom: 2px; }
+  #drop span { color: var(--muted); font-size: 13px; }
+  .sub-actions { margin-top: 10px; text-align: center; color: var(--muted); font-size: 13px; }
+  .linkish { background: none; border: none; color: var(--accent); text-decoration: underline; padding: 0; }
+
+  #progress { margin-top: 18px; }
+  .bar-track { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  #progressText { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  #error { margin-top: 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
+
+  #result { margin-top: 22px; }
+  .song-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+  .song-head h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
+  .facts { color: var(--muted); font-size: 14px; }
+  .facts b { color: var(--ink); }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 12px 14px; margin: 12px 0 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  .controls label, .ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .stepper { display: inline-flex; align-items: center; gap: 4px; }
+  .stepper button { padding: 2px 9px; }
+  .stepper output { min-width: 2.2em; text-align: center; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tip-capo { font-size: 13px; }
+  .notice { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
+
+  .levels { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .levels button { border: none; border-radius: 0; padding: 5px 14px; border-left: 1px solid var(--line); color: var(--ink); }
+  .levels button:first-child { border-left: none; }
+  .levels button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; align-items: flex-end; }
+  .tabs button[role=tab] { border: none; background: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--muted); }
+  .tabs button[aria-selected=true] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .tabs .spacer { flex: 1; }
+  .tabs .tool { margin-bottom: 5px; font-size: 13px; padding: 3px 10px; }
+
+  /* 歌詞+コード+押さえ方 */
+  .lyric-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; margin-bottom: 14px;
+    background: var(--accent-soft); border-radius: 10px; font-size: 14px; }
+  .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 2px 6px; margin-bottom: 20px; break-inside: avoid; position: relative; }
+  .row.chords-only { margin-bottom: 10px; }
+  .row-sync { position: absolute; right: 0; top: 0; font-size: 11px; padding: 0 6px; color: var(--muted); opacity: 0; }
+  .row:hover .row-sync, .row-sync:focus-visible { opacity: 1; }
+  .section-head { font-weight: 700; font-size: 14px; color: var(--accent); margin: 22px 0 8px; }
+  .gap-row { height: 14px; }
+  .cell { display: flex; flex-direction: column; align-items: flex-start; min-width: 62px; padding: 2px 5px; background: none; border: none; border-radius: 8px; text-align: left; }
+  .cell:hover { background: var(--accent-soft); }
+  .cell .name { font-weight: 700; font-size: 15px; color: var(--chord); line-height: 1.25; white-space: nowrap; }
+  .cell .name.nc { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .cell .words { font-size: 17px; color: var(--lyric); line-height: 1.4; min-height: 1.4em; white-space: pre-wrap; }
+  .cell.empty-words .words { min-height: 0; }
+  .cell.now { background: var(--accent); }
+  .cell.now .name, .cell.now .words { color: var(--accent-ink); }
+  .cell.now .diagram-h .d-line, .cell.now .diagram-h .d-mark-h, .cell.now .diagram-h .d-base { stroke: var(--accent-ink); fill: var(--accent-ink); }
+  .cell.now .diagram-h .d-line { fill: none; }
+  .cell.now .diagram-h .d-nut, .cell.now .diagram-h .d-barre-h, .cell.now .diagram-h .d-open { stroke: var(--accent-ink); }
+  .cell.now .diagram-h .d-dot { fill: var(--accent-ink); }
+  .cell.edited .name::after, .seg.edited::after { content: "*"; font-weight: 400; margin-left: 2px; }
+  .diagram-h { width: 66px; display: block; }
+  .hide-diagrams .diagram-h { display: none; }
+  .d-barre-h { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
+  .d-mark-h { fill: var(--ink); font-size: 12px; font-weight: 700; text-anchor: middle; }
+
+  .used { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .used figure { margin: 0; width: 92px; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 4px 2px; }
+  .used figcaption { font-weight: 700; color: var(--chord); font-size: 14px; }
+  .diagram { width: 100%; display: block; }
+  .d-line { stroke: var(--muted); stroke-width: 1; }
+  .d-nut { stroke: var(--ink); stroke-width: 3.5; }
+  .d-dot { fill: var(--ink); }
+  .d-barre { stroke: var(--ink); stroke-width: 7; stroke-linecap: round; }
+  .d-open { fill: none; stroke: var(--ink); stroke-width: 1.3; }
+  .d-mark { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+  .d-base { fill: var(--muted); font-size: 10px; }
+
+  .sheet { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-left: 2px solid var(--line); }
+  .bar { position: relative; display: flex; min-height: 62px; border-right: 2px solid var(--line); border-bottom: 1px solid var(--line); padding-top: 16px; }
+  .bar-no { position: absolute; left: 6px; top: 1px; font-size: 11px; color: var(--muted); background: none; border: none; padding: 0 2px; }
+  .bar-no:hover { color: var(--accent); }
+  .seg { display: flex; align-items: center; min-width: 0; padding: 2px 4px 6px 8px; font-weight: 700; font-size: 18px; color: var(--chord);
+    background: none; border: none; border-radius: 6px; text-align: left; overflow-wrap: anywhere; line-height: 1.15; }
+  .seg:hover { background: var(--accent-soft); }
+  .seg.nc { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .seg.now { background: var(--accent); color: var(--accent-ink); }
+
+  pre.tab { margin: 0; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto;
+    font: 13px/1.35 ui-monospace, "Cascadia Mono", Consolas, "MS Gothic", monospace; }
+
+  /* 画面の下に固定する操作バー */
+  #dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 14px rgba(0,0,0,.08); }
+  .dock-inner { max-width: 1040px; margin: 0 auto; padding: 8px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  #player { flex: 1 1 320px; min-width: 0; height: 42px; }
+  #autoScroll { font-weight: 700; padding: 8px 14px; white-space: nowrap; }
+  #autoScroll[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  #scrollNote { flex-basis: 100%; font-size: 12px; color: var(--accent); margin-top: -4px; }
+  #syncPanel { border-bottom: 1px solid var(--line); background: var(--accent-soft); }
+  .sync-inner { max-width: 1040px; margin: 0 auto; padding: 10px 20px; }
+  .sync-prev { font-size: 13px; color: var(--muted); min-height: 1.4em; }
+  .sync-next { font-size: 20px; font-weight: 700; margin: 2px 0 8px; overflow-wrap: anywhere; }
+  .sync-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .sync-actions .hint { font-size: 12px; color: var(--muted); }
+
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 16px 18px; max-width: 340px; }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  dialog h3 { margin: 0 0 10px; font-size: 16px; }
+  .dlg-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .dlg-preview { width: 110px; margin: 0 auto 10px; }
+  .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .dlg-pos { font-size: 13px; color: var(--muted); }
+  #lyricDlg { width: min(620px, 92vw); max-width: none; }
+  #lyricText { width: 100%; height: 44vh; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; resize: vertical; line-height: 1.6; }
+  .dlg-help { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+  [hidden] { display: none !important; }
+  footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
+
+  @media (max-width: 700px) { .sheet { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media print {
+    body { background: #fff; color: #000; }
+    #drop, .sub-actions, #dock, .controls, .tabs, footer, .notice, .lead, h1, .lyric-banner, .row-sync { display: none !important; }
+    .cell.now { background: none; } .seg.now { background: none; color: inherit; }
+    main { padding: 0; }
+    .bar { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>ChordTab</h1>
+  <p class="lead">音楽データを入れると、ギターのコード譜を作ります。歌詞を貼れば、歌詞・コード・押さえ方が並んだ譜面になります。ファイルはこのパソコンの中だけで処理され、外部には送信されません。</p>
+
+  <label id="drop" tabindex="0">
+    <strong>音楽ファイルをドロップ、またはクリックして選択</strong>
+    <span>MP3 / WAV / M4A / OGG / FLAC / MIDI (.mid)</span>
+    <input id="file" type="file" accept="audio/*,.mid,.midi,.flac,.m4a" hidden>
+  </label>
+  <div class="sub-actions">ファイルが手元にないときは <button class="linkish" id="demo" type="button">デモ曲で試す</button></div>
+
+  <div id="progress" hidden>
+    <div class="bar-track"><div class="bar-fill" id="progressFill"></div></div>
+    <div id="progressText" role="status"></div>
+  </div>
+  <div id="error" role="alert" hidden></div>
+
+  <section id="result" hidden>
+    <div class="song-head">
+      <h2 id="title"></h2>
+      <div class="facts" id="facts"></div>
+    </div>
+
+    <div class="controls">
+      <span class="ctl">難易度
+        <span class="levels" role="group" aria-label="難易度">
+          <button type="button" data-level="easy" title="メジャーとマイナーだけ。セーハなしのフォーム。短いコードは省略">初級</button>
+          <button type="button" data-level="mid" title="7th や sus4 を含む定番のフォーム(セーハあり)">中級</button>
+          <button type="button" data-level="hard" title="aug や m7(b5) まで、推定したコードをすべて表示">上級</button>
+        </span>
+      </span>
+      <label>カポ <select id="capo"></select></label>
+      <span class="tip-capo" id="capoTip"></span>
+      <span class="ctl">移調
+        <span class="stepper"><button type="button" id="tDown" aria-label="半音下げる">−</button><output id="tVal">0</output><button type="button" id="tUp" aria-label="半音上げる">+</button></span>
+      </span>
+      <label><input type="checkbox" id="showDiagrams" checked> 押さえ方を表示</label>
+      <button type="button" id="editLyrics">歌詞を入力</button>
+      <button type="button" id="startSync">歌詞のタイミング合わせ</button>
+      <label>拍子
+        <select id="meter">
+          <option value="4">4/4</option><option value="3">3/4</option><option value="6">6/8</option><option value="2">2/4</option>
+        </select>
+      </label>
+      <label>小節線 <button type="button" id="shiftBar" title="小節の頭がずれているときに押します">1 拍ずらす</button></label>
+      <span class="ctl" id="tempoFix">テンポ
+        <span class="stepper"><button type="button" id="tempoHalf" title="拍を倍の長さに取り直します">÷2</button><button type="button" id="tempoDouble" title="拍を半分の長さに取り直します">×2</button></span>
+      </span>
+    </div>
+    <p class="notice" id="notice" hidden></p>
+
+    <div class="tabs" role="tablist">
+      <button role="tab" type="button" id="tabLyrics" data-view="lyrics">歌詞と押さえ方</button>
+      <button role="tab" type="button" id="tabSheet" data-view="sheet">小節ごと</button>
+      <button role="tab" type="button" id="tabTab" data-view="tab">TAB</button>
+      <span class="spacer"></span>
+      <button type="button" class="tool" id="copyTxt">テキストをコピー</button>
+      <button type="button" class="tool" id="saveTxt">テキスト保存</button>
+      <button type="button" class="tool" id="print">印刷</button>
+    </div>
+
+    <div id="lyricsView">
+      <div class="lyric-banner" id="lyricBanner" hidden></div>
+      <div id="rows"></div>
+    </div>
+    <div id="otherView" hidden>
+      <div class="used" id="used" aria-label="この曲で使うコード"></div>
+      <div id="sheet" class="sheet"></div>
+      <pre id="tab" class="tab" hidden></pre>
+    </div>
+    <footer>コードをクリックすると、その場所から再生したり、コードや歌詞の位置を直したりできます(コードを直した箇所には * が付きます)。歌詞・修正内容・設定はこのブラウザに保存されます。コードは推定なので、耳で確認してください。</footer>
+  </section>
+</main>
+
+<div id="dock" hidden>
+  <div id="syncPanel" hidden>
+    <div class="sync-inner">
+      <div class="sync-prev" id="syncPrev"></div>
+      <div class="sync-next" id="syncNext"></div>
+      <div class="sync-actions">
+        <button type="button" class="primary" id="syncTap">この行を歌い始めた</button>
+        <button type="button" id="syncBack">1 行戻る</button>
+        <button type="button" id="syncDone">終了</button>
+        <span class="hint">スペースキーでも押せます。歌い出しに合わせて押してください。</span>
+      </div>
+    </div>
+  </div>
+  <div class="dock-inner">
+    <audio id="player" controls></audio>
+    <button type="button" id="autoScroll" aria-pressed="false" title="ショートカット: S キー"></button>
+    <div id="scrollNote" role="status" hidden></div>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <h3 id="dlgTitle">コードを修正</h3>
+  <div class="dlg-row">
+    <select id="dlgRoot" aria-label="根音"></select>
+    <select id="dlgQ" aria-label="種類"></select>
+  </div>
+  <div class="dlg-preview" id="dlgPreview"></div>
+  <div class="dlg-row dlg-pos" id="dlgPosRow">歌詞の位置
+    <button type="button" id="dlgPosLeft">← 前の文字へ</button>
+    <button type="button" id="dlgPosRight">次の文字へ →</button>
+  </div>
+  <div class="dlg-actions">
+    <button type="button" id="dlgPlay">ここから再生</button>
+    <button type="button" id="dlgCancel">閉じる</button>
+    <button type="button" class="primary" id="dlgApply">適用</button>
+  </div>
+</dialog>
+
+<dialog id="confirmDlg">
+  <h3>拍を取り直しますか?</h3>
+  <p class="dlg-help">手で直したコードと文字の位置は元に戻ります。歌詞のタイミングは残ります。</p>
+  <div class="dlg-actions">
+    <button type="button" id="confirmNo">やめる</button>
+    <button type="button" class="primary" id="confirmYes">取り直す</button>
+  </div>
+</dialog>
+
+<dialog id="lyricDlg">
+  <h3>歌詞を入力</h3>
+  <p class="dlg-help">歌詞を貼り付けてください。1 行が譜面の 1 行になります。【サビ】のように書くと見出しになり、空行はそのまま間隔になります。[01:23.45] 形式の時刻付き(LRC)なら、タイミングも自動で合います。</p>
+  <textarea id="lyricText" aria-label="歌詞"></textarea>
+  <div class="dlg-actions" style="margin-top:12px">
+    <button type="button" id="lyricCancel">閉じる</button>
+    <button type="button" class="primary" id="lyricSave">保存</button>
+  </div>
+</dialog>
+
+<script src="chordtab-core.js"></script>
+<script>
+'use strict';
+const CT = window.ChordTab;
+const $ = (id) => document.getElementById(id);
+const LEVEL_NOTE = {
+  easy: '初級: メジャーとマイナーだけ、セーハなしのフォームです。実際の曲とは響きが少し変わります。',
+  mid: '',
+  hard: '上級: 推定したコードをすべて表示します。難しいコードほど推定を間違えやすくなります。',
+};
+
+const app = {
+  features: null, samples: null, sr: 0, tempoScale: 1, midi: null,
+  decoded: {}, beatChords: [], overrides: new Map(), charShift: new Map(),
+  phase: 0, phaseOffset: 0, beatsPerBar: 4, key: null, level: 'mid',
+  lines: [], transpose: 0, capo: 0, capoManual: false, view: 'lyrics', title: '', audioUrl: null, segEls: [], bars: [], rows: [],
+  autoScroll: false, showDiagrams: true, sync: null,
+};
+
+/* ---------- 保存(曲ごと) ---------- */
+const prefs = {
+  get(k, d) { try { const v = localStorage.getItem('chordtab.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('chordtab.' + k, JSON.stringify(v)); } catch (e) { /* 保存できない環境では諦める */ } },
+};
+const songKey = () => `song.${app.title}.${Math.round(app.features.duration)}`;
+function saveSong() {
+  prefs.set(songKey(), {
+    lines: app.lines, overrides: [...app.overrides], charShift: [...app.charShift],
+    level: app.level, capo: app.capo, capoManual: app.capoManual, transpose: app.transpose, phaseOffset: app.phaseOffset, tempoScale: app.tempoScale,
+  });
+}
+
+/* ---------- 読み込み ---------- */
+function setProgress(ratio, text) {
+  $('progress').hidden = false;
+  $('progressFill').style.width = Math.round(ratio * 100) + '%';
+  if (text) $('progressText').textContent = text;
+}
+function showError(msg) { $('error').textContent = msg; $('error').hidden = false; $('progress').hidden = true; }
+
+async function decodeToMono(arrayBuffer) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  let decoded;
+  try { decoded = await ctx.decodeAudioData(arrayBuffer); }
+  finally { ctx.close(); }
+  const sr = 11025; // コードの判定には 5.5kHz までで十分
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * sr), sr);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const rendered = await off.startRendering();
+  return { samples: rendered.getChannelData(0), sr };
+}
+
+function setAudioBlob(blob) {
+  if (app.audioUrl) URL.revokeObjectURL(app.audioUrl);
+  app.audioUrl = URL.createObjectURL(blob);
+  $('player').src = app.audioUrl;
+}
+
+async function loadFile(file) {
+  const isMidi = /\.midi?$/i.test(file.name) || /midi/.test(file.type);
+  const buffer = await file.arrayBuffer();
+  if (isMidi) return loadMidi(buffer, file.name);
+  setProgress(0.02, '音声を読み込んでいます…');
+  let mono;
+  try { mono = await decodeToMono(buffer); }
+  catch (e) { throw new Error('この音声ファイルは読み込めませんでした。形式が対応外か、ファイルが壊れている可能性があります。'); }
+  setAudioBlob(file);
+  await analyzeAudio(mono.samples, mono.sr, file.name);
+}
+
+async function analyzeAudio(samples, sr, title) {
+  app.samples = samples; app.sr = sr; app.midi = null; app.title = title;
+  // 前回この曲でテンポを直していたら、その拍で解析する(歌詞やコード修正の位置がずれないように)
+  const dur = samples.length / sr;
+  const saved = prefs.get(`song.${title}.${Math.round(dur)}`, null);
+  app.tempoScale = (saved && saved.tempoScale) || 1;
+  await runAudioFeatures();
+  finishLoad(title);
+}
+
+async function runAudioFeatures() {
+  app.features = await CT.extractAudioFeatures(app.samples, app.sr, (r) => setProgress(0.05 + r * 0.9, '拍とコードを解析しています…'), app.tempoScale);
+}
+
+async function loadMidi(buffer, title) {
+  setProgress(0.2, 'MIDI を読み込んでいます…');
+  const midi = CT.parseMidi(buffer);
+  app.samples = null; app.midi = midi;
+  app.features = CT.extractMidiFeatures(midi);
+  setProgress(0.6, 'MIDI の試聴用音声を作っています…');
+  await new Promise((r) => setTimeout(r, 0));
+  const sr = 22050;
+  const pcm = CT.renderNotes(midi.notes, sr, app.features.duration + 1);
+  let peak = 0;
+  for (const v of pcm) peak = Math.max(peak, Math.abs(v));
+  if (peak > 0.95) for (let i = 0; i < pcm.length; i++) pcm[i] *= 0.95 / peak;
+  setAudioBlob(new Blob([CT.encodeWav(pcm, sr)], { type: 'audio/wav' }));
+  finishLoad(title);
+}
+
+async function loadDemo() {
+  setProgress(0.02, 'デモ曲を作っています…');
+  await new Promise((r) => setTimeout(r, 0));
+  const song = CT.synthSong({ bpm: 96, seed: 41, repeats: 4, progression: [[3, 'maj'], [10, 'maj'], [0, 'min'], [8, 'maj'], [5, 'm7'], [10, '7'], [3, 'maj'], [3, 'maj']] });
+  setAudioBlob(new Blob([CT.encodeWav(song.samples, song.sr)], { type: 'audio/wav' }));
+  await analyzeAudio(song.samples, song.sr, 'デモ曲(自動生成)');
+}
+
+function finishLoad(title) {
+  app.title = title;
+  const meterSel = $('meter');
+  const beats = String(app.features.beatsPerBar);
+  if (![...meterSel.options].some((o) => o.value === beats)) meterSel.add(new Option(`${beats} 拍`, beats));
+  meterSel.value = beats;
+  stopSync();
+  const saved = prefs.get(songKey(), null);
+  app.lines = saved ? saved.lines || [] : [];
+  app.overrides = new Map(saved ? saved.overrides || [] : []);
+  app.charShift = new Map(saved ? saved.charShift || [] : []);
+  app.level = saved && saved.level ? saved.level : prefs.get('level', 'mid');
+  app.transpose = saved ? saved.transpose || 0 : 0;
+  app.phaseOffset = saved ? saved.phaseOffset || 0 : 0;
+  app.capoManual = !!(saved && saved.capoManual);
+  runDecode();
+  app.capo = saved && typeof saved.capo === 'number' ? saved.capo : recommendedCapo();
+  $('progress').hidden = true;
+  $('result').hidden = false;
+  $('dock').hidden = false;
+  $('tempoFix').hidden = !app.samples;
+  render();
+}
+
+function runDecode() {
+  app.beatsPerBar = Number($('meter').value);
+  const base = { beatsPerBar: app.beatsPerBar };
+  const std = CT.decodeChords(app.features, { ...base, vocabulary: 'standard' });
+  const det = CT.decodeChords(app.features, { ...base, vocabulary: 'detailed' });
+  app.decoded = { standard: std.beatChords, detailed: det.beatChords };
+  app.phase = std.phase; app.key = std.key;
+  applyLevel();
+}
+
+/** 難易度と手修正を反映して、表示するコード列を作る */
+function applyLevel() {
+  const source = app.level === 'hard' ? app.decoded.detailed : app.decoded.standard;
+  const out = CT.applyDifficulty(source, app.level);
+  app.overrides.forEach((chord, beat) => { if (beat < out.length) out[beat] = chord; });
+  app.beatChords = out;
+}
+
+/* ---------- 表示 ---------- */
+const barPhase = () => ((app.phase + app.phaseOffset) % app.beatsPerBar + app.beatsPerBar) % app.beatsPerBar;
+const isEasy = () => app.level === 'easy';
+function changeList(transpose) {
+  const out = [];
+  CT.buildBars(app.beatChords, barPhase(), app.beatsPerBar).forEach((bar) => {
+    bar.segments.forEach((s) => { if (s.chord) out.push(CT.shiftChord(s.chord, transpose)); });
+  });
+  return out;
+}
+const recommendedCapo = () => CT.recommendCapo(changeList(app.transpose), 7, isEasy()).capo;
+const soundingKeyFlats = () => CT.usesFlats(app.key.tonic + app.transpose, app.key.mode);
+const shapeFlats = () => CT.usesFlats(app.key.tonic + app.transpose - app.capo, app.key.mode);
+const keyLabel = () => `${CT.noteName(app.key.tonic + app.transpose, soundingKeyFlats())}${app.key.mode === 'minor' ? 'm' : ''}`;
+const lyricCount = () => app.lines.filter((l) => l.kind === 'lyric').length;
+const timedCount = () => app.lines.filter((l) => l.kind === 'lyric' && typeof l.time === 'number').length;
+
+function render() {
+  const f = app.features;
+  app.bars = CT.buildBars(app.beatChords, barPhase(), app.beatsPerBar);
+  $('title').textContent = app.title;
+  const min = Math.floor(f.duration / 60), sec = String(Math.round(f.duration % 60)).padStart(2, '0');
+  const facts = [`キー <b>${keyLabel()}</b>`, `テンポ <b>${Math.round(f.bpm)}</b> BPM`, `長さ ${min}:${sec}`];
+  if (Math.abs(f.tuningCents) >= 10) facts.push(`チューニング ${f.tuningCents > 0 ? '+' : ''}${f.tuningCents} セント`);
+  $('facts').innerHTML = facts.join(' ・ ');
+  $('tVal').textContent = (app.transpose > 0 ? '+' : '') + app.transpose;
+  document.querySelectorAll('.levels button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.level === app.level));
+
+  const capoSel = $('capo');
+  capoSel.innerHTML = '';
+  for (let i = 0; i <= 7; i++) capoSel.add(new Option(i === 0 ? 'なし' : `${i} フレット`, String(i)));
+  capoSel.value = String(app.capo);
+  const rec = recommendedCapo();
+  const tip = $('capoTip');
+  tip.innerHTML = '';
+  if (rec !== app.capo) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'linkish';
+    b.textContent = rec === 0 ? 'カポなしのほうが楽です' : `カポ ${rec} がおすすめ`;
+    b.onclick = () => { app.capo = rec; app.capoManual = false; update(); };
+    tip.append(b);
+  }
+
+  const notes = [...f.warnings];
+  if (LEVEL_NOTE[app.level]) notes.push(LEVEL_NOTE[app.level]);
+  if (app.capo > 0) notes.push(`カポ ${app.capo} の押さえ方で表記しています(実音のキーは ${keyLabel()})。`);
+  if (app.transpose !== 0) notes.push('移調しても再生音はもとのキーのままです。');
+  $('notice').textContent = notes.join(' ');
+  $('notice').hidden = !notes.length;
+
+  $('editLyrics').textContent = lyricCount() ? '歌詞を編集' : '歌詞を入力';
+  $('startSync').hidden = !lyricCount();
+
+  app.segEls = [];
+  activeSeg = null; activeRow = null;
+  renderLyricRows();
+  renderUsed();
+  renderSheet();
+  $('tab').textContent = tabText();
+  $('lyricsView').hidden = app.view !== 'lyrics';
+  $('otherView').hidden = app.view === 'lyrics';
+  $('sheet').hidden = app.view !== 'sheet';
+  $('tab').hidden = app.view !== 'tab';
+  document.querySelectorAll('.tabs [role=tab]').forEach((b) => b.setAttribute('aria-selected', b.dataset.view === app.view));
+  renderAutoScroll();
+}
+function update() { render(); saveSong(); }
+
+function renderLyricRows() {
+  const shift = app.transpose - app.capo, flats = shapeFlats(), easy = isEasy();
+  const banner = $('lyricBanner');
+  banner.innerHTML = '';
+  if (!lyricCount()) {
+    banner.hidden = false;
+    banner.append('音楽データに歌詞の文字は入っていないので、歌詞は貼り付けてください。');
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'primary'; b.textContent = '歌詞を入力';
+    b.onclick = openLyrics;
+    banner.append(b);
+  } else if (timedCount() < lyricCount()) {
+    banner.hidden = false;
+    banner.append(`歌詞の位置はまだ大まかな割り振りです(${timedCount()}/${lyricCount()} 行が設定済み)。`);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'primary'; b.textContent = 'タイミング合わせを始める';
+    b.onclick = () => startSync(0);
+    banner.append(b);
+  } else banner.hidden = true;
+
+  app.rows = CT.buildLyricLayout({
+    beatChords: app.beatChords, beats: app.features.beats, lines: app.lines, duration: app.features.duration,
+    phase: barPhase(), beatsPerBar: app.beatsPerBar, charShift: app.charShift,
+  });
+  const host = $('rows');
+  host.innerHTML = '';
+  host.classList.toggle('hide-diagrams', !app.showDiagrams);
+  for (const row of app.rows) {
+    if (row.type === 'gap') { const g = document.createElement('div'); g.className = 'gap-row'; host.append(g); continue; }
+    if (row.type === 'section') { const h = document.createElement('div'); h.className = 'section-head'; h.textContent = row.text; host.append(h); continue; }
+    const el = document.createElement('div');
+    el.className = 'row' + (row.type === 'chords' ? ' chords-only' : '');
+    for (const cell of row.cells) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      const shown = CT.shiftChord(cell.chord, shift);
+      b.className = 'cell' + (cell.text ? '' : ' empty-words') + (app.overrides.has(cell.start) ? ' edited' : '');
+      const name = document.createElement('span');
+      name.className = 'name' + (shown ? '' : ' nc');
+      name.textContent = CT.chordName(shown, flats);
+      b.append(name);
+      if (shown) b.insertAdjacentHTML('beforeend', CT.diagramSVG(shown, flats, { horizontal: true, easy }));
+      const words = document.createElement('span');
+      words.className = 'words';
+      words.textContent = cell.text;
+      b.append(words);
+      b.onclick = () => openEditor({ chord: cell.chord, start: cell.start, end: cell.end, shiftable: !!cell.shiftable });
+      el.append(b);
+      app.segEls.push({ el: b, start: cell.start, end: cell.end, view: 'lyrics' });
+    }
+    if (row.type === 'lyric') {
+      const again = document.createElement('button');
+      again.type = 'button'; again.className = 'row-sync'; again.textContent = 'この行からタイミング合わせ';
+      const idx = row.lineIndex;
+      again.onclick = () => startSync(idx);
+      el.append(again);
+    }
+    host.append(el);
+  }
+}
+
+function renderUsed() {
+  const shift = app.transpose - app.capo, flats = shapeFlats(), easy = isEasy();
+  const seen = new Map();
+  app.bars.forEach((bar) => bar.segments.forEach((s) => {
+    if (!s.chord) return;
+    const c = CT.shiftChord(s.chord, shift), k = c.root + ':' + c.q;
+    if (!seen.has(k)) seen.set(k, c);
+  }));
+  $('used').innerHTML = [...seen.values()].map((c) =>
+    `<figure>${CT.diagramSVG(c, flats, { easy })}<figcaption>${CT.chordName(c, flats)}</figcaption></figure>`).join('');
+}
+
+function renderSheet() {
+  const shift = app.transpose - app.capo, flats = shapeFlats();
+  const sheet = $('sheet');
+  sheet.innerHTML = '';
+  for (const bar of app.bars) {
+    const el = document.createElement('div');
+    el.className = 'bar';
+    const no = document.createElement('button');
+    no.type = 'button'; no.className = 'bar-no'; no.textContent = bar.number;
+    no.title = `${bar.number} 小節目から再生`;
+    no.onclick = () => seek(bar.segments.find((s) => s.beatIndex >= 0)?.beatIndex ?? 0);
+    el.append(no);
+    for (const seg of bar.segments) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg' + (seg.chord ? '' : ' nc');
+      b.style.flex = `${seg.len} 1 0`;
+      b.textContent = CT.chordName(CT.shiftChord(seg.chord, shift), flats);
+      const startIdx = Math.max(0, seg.beatIndex), endIdx = seg.beatIndex + seg.len;
+      if (app.overrides.has(startIdx)) b.classList.add('edited');
+      b.onclick = () => openEditor({ chord: seg.chord, start: startIdx, end: endIdx, shiftable: false });
+      el.append(b);
+      app.segEls.push({ el: b, start: startIdx, end: endIdx, view: 'sheet' });
+    }
+    sheet.append(el);
+  }
+}
+
+function tabText() {
+  return CT.renderTabText(app.bars, { transpose: app.transpose, capo: app.capo, flats: shapeFlats(), easy: isEasy() });
+}
+
+/* ---------- 自動スクロール ---------- */
+function renderAutoScroll() {
+  const b = $('autoScroll');
+  b.textContent = `自動スクロール: ${app.autoScroll ? 'ON' : 'OFF'}`;
+  b.setAttribute('aria-pressed', app.autoScroll);
+}
+function setAutoScroll(on, note) {
+  app.autoScroll = on;
+  prefs.set('autoScroll', on);
+  renderAutoScroll();
+  const n = $('scrollNote');
+  n.textContent = note || '';
+  n.hidden = !note;
+  clearTimeout(setAutoScroll.timer);
+  if (note) setAutoScroll.timer = setTimeout(() => { n.hidden = true; }, 3500);
+  if (on) { activeRow = null; }
+}
+app.autoScroll = prefs.get('autoScroll', false);
+$('autoScroll').onclick = (e) => { setAutoScroll(!app.autoScroll); e.currentTarget.blur(); };
+
+// 自動スクロール中に自分でスクロールしたら、取り合いにならないようすぐ止める
+function userScrolled() {
+  if (app.autoScroll && !$('player').paused && !$('dlg').open && !$('lyricDlg').open) {
+    setAutoScroll(false, '手動でスクロールしたので自動スクロールを止めました(S キーで再開)');
+  }
+}
+window.addEventListener('wheel', userScrolled, { passive: true });
+window.addEventListener('touchmove', userScrolled, { passive: true });
+
+/* ---------- 再生との同期 ---------- */
+function seek(beatIndex) {
+  const p = $('player');
+  p.currentTime = app.features.beats[Math.max(0, beatIndex)] || 0;
+  p.play().catch(() => {});
+}
+let activeSeg = null, activeRow = null;
+function syncLoop() {
+  const p = $('player'), f = app.features;
+  if (f && !$('result').hidden) {
+    const t = p.currentTime;
+    let lo = 0, hi = f.beats.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (f.beats[m] <= t) lo = m; else hi = m - 1; }
+    const hit = t > 0 ? app.segEls.find((s) => s.view === app.view && lo >= s.start && lo < s.end) : null;
+    if (hit !== activeSeg && (hit || !activeSeg || lo >= activeSeg.end || lo < activeSeg.start)) {
+      activeSeg?.el.classList.remove('now');
+      hit?.el.classList.add('now');
+      activeSeg = hit;
+    }
+    if (hit && app.autoScroll && !p.paused && !app.sync) {
+      const row = hit.el.closest('.row, .bar');
+      if (row !== activeRow) {
+        activeRow = row;
+        const top = row.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.28;
+        window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      }
+    }
+  }
+  requestAnimationFrame(syncLoop);
+}
+requestAnimationFrame(syncLoop);
+
+/* ---------- コードの修正 ---------- */
+let editing = null;
+function openEditor(cell) {
+  const shift = app.transpose - app.capo, flats = shapeFlats();
+  const shown = CT.shiftChord(cell.chord, shift) || { root: 0, q: 'maj' };
+  editing = { start: cell.start, end: cell.end, shift };
+  const rootSel = $('dlgRoot'), qSel = $('dlgQ');
+  rootSel.innerHTML = '';
+  for (let i = 0; i < 12; i++) rootSel.add(new Option(CT.noteName(i, flats), String(i)));
+  qSel.innerHTML = '';
+  for (const [k, v] of Object.entries(CT.QUALITIES)) qSel.add(new Option(v.suffix || 'メジャー', k));
+  qSel.add(new Option('コードなし (N.C.)', 'none'));
+  rootSel.value = String(shown.root);
+  qSel.value = cell.chord ? shown.q : 'none';
+  $('dlgTitle').textContent = app.capo ? `コードを修正(カポ ${app.capo} の表記)` : 'コードを修正';
+  $('dlgPosRow').hidden = !cell.shiftable;
+  updatePreview();
+  $('dlg').showModal();
+}
+function updatePreview() {
+  const q = $('dlgQ').value;
+  $('dlgRoot').disabled = q === 'none';
+  $('dlgPreview').innerHTML = q === 'none' ? '' : CT.diagramSVG({ root: Number($('dlgRoot').value), q }, shapeFlats(), { easy: isEasy() });
+}
+function moveChar(delta) {
+  app.charShift.set(editing.start, (app.charShift.get(editing.start) || 0) + delta);
+  update();
+}
+$('dlgPosLeft').onclick = () => moveChar(-1);
+$('dlgPosRight').onclick = () => moveChar(1);
+$('dlgRoot').onchange = updatePreview;
+$('dlgQ').onchange = updatePreview;
+$('dlgCancel').onclick = () => $('dlg').close();
+$('dlgPlay').onclick = () => { $('dlg').close(); seek(editing.start); };
+$('dlgApply').onclick = () => {
+  const q = $('dlgQ').value;
+  const chord = q === 'none' ? null : { root: CT.mod12(Number($('dlgRoot').value) - editing.shift), q };
+  for (let i = editing.start; i < editing.end && i < app.beatChords.length; i++) app.overrides.set(i, chord);
+  applyLevel();
+  $('dlg').close();
+  update();
+};
+
+/* ---------- 歌詞 ---------- */
+function linesToText(lines) {
+  return lines.map((l) => (l.kind === 'blank' ? '' : l.kind === 'section' ? `【${l.text}】` : l.text)).join('\n');
+}
+function openLyrics() {
+  $('lyricText').value = linesToText(app.lines);
+  $('lyricDlg').showModal();
+  $('lyricText').focus();
+}
+$('editLyrics').onclick = openLyrics;
+$('lyricCancel').onclick = () => $('lyricDlg').close();
+$('lyricSave').onclick = () => {
+  const parsed = CT.parseLyrics($('lyricText').value);
+  // 文字が変わっていない行は、合わせ済みのタイミングを引き継ぐ
+  const old = app.lines.filter((l) => l.kind === 'lyric');
+  let i = 0;
+  for (const l of parsed) {
+    if (l.kind !== 'lyric') continue;
+    if (l.time === null && old[i] && old[i].text === l.text) l.time = old[i].time;
+    i++;
+  }
+  app.lines = parsed;
+  $('lyricDlg').close();
+  app.view = 'lyrics';
+  update();
+};
+
+/* ---------- タイミング合わせ ---------- */
+function lyricLines() { return app.lines.filter((l) => l.kind === 'lyric'); }
+function startSync(index) {
+  const lines = lyricLines();
+  if (!lines.length) return;
+  app.sync = { index: Math.min(index, lines.length - 1) };
+  $('syncPanel').hidden = false;
+  renderSync();
+  const p = $('player');
+  const line = lines[app.sync.index], prev = lines[app.sync.index - 1];
+  const from = typeof line.time === 'number' ? line.time : prev && typeof prev.time === 'number' ? prev.time : 0;
+  p.currentTime = Math.max(0, from - 3);
+  p.play().catch(() => {});
+}
+function renderSync() {
+  const lines = lyricLines(), i = app.sync.index;
+  $('syncPrev').textContent = i > 0 ? lines[i - 1].text : '(最初の行です)';
+  $('syncNext').textContent = lines[i].text;
+}
+function stopSync() {
+  app.sync = null;
+  $('syncPanel').hidden = true;
+}
+function syncTap() {
+  const lines = lyricLines();
+  // 押すまでの反応の遅れを少し引いておく
+  lines[app.sync.index].time = Math.max(0, $('player').currentTime - 0.12);
+  if (app.sync.index + 1 >= lines.length) { stopSync(); update(); return; }
+  app.sync.index++;
+  renderSync();
+  update();
+}
+$('startSync').onclick = () => {
+  const lines = lyricLines();
+  const firstUntimed = lines.findIndex((l) => typeof l.time !== 'number');
+  startSync(firstUntimed >= 0 ? firstUntimed : 0);
+};
+$('syncTap').onclick = (e) => { syncTap(); e.currentTarget.blur(); };
+$('syncBack').onclick = (e) => {
+  e.currentTarget.blur();
+  const i = Math.max(0, app.sync.index - 1);
+  startSync(i);
+};
+$('syncDone').onclick = () => { stopSync(); $('player').pause(); };
+
+/* ---------- 操作 ---------- */
+async function handleFile(file) {
+  $('error').hidden = true;
+  $('result').hidden = true;
+  $('dock').hidden = true;
+  try { await loadFile(file); }
+  catch (e) { console.error(e); showError(e.message || '解析に失敗しました。'); }
+}
+app.handleFile = handleFile;
+window.chordTabApp = app;
+
+$('file').onchange = (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ''; };
+const drop = $('drop');
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } });
+$('demo').onclick = async () => {
+  $('error').hidden = true; $('result').hidden = true; $('dock').hidden = true;
+  try { await loadDemo(); } catch (e) { console.error(e); showError(e.message || '解析に失敗しました。'); }
+};
+
+document.addEventListener('keydown', (e) => {
+  if ($('dlg').open || $('lyricDlg').open || $('result').hidden) return;
+  const tag = e.target.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && e.target.type !== 'checkbox')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === 'Space') {
+    if (app.sync) { e.preventDefault(); if (!e.repeat) syncTap(); return; }
+    if (tag === 'BUTTON' || tag === 'AUDIO' || tag === 'INPUT') return; // フォーカス中のボタンの操作を優先
+    e.preventDefault();
+    const p = $('player');
+    if (p.paused) p.play().catch(() => {}); else p.pause();
+  } else if (e.key === 's' || e.key === 'S') {
+    setAutoScroll(!app.autoScroll);
+  } else if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+    userScrolled();
+  }
+});
+
+document.querySelectorAll('.levels button').forEach((b) => {
+  b.onclick = () => {
+    app.level = b.dataset.level;
+    prefs.set('level', app.level);
+    applyLevel();
+    if (!app.capoManual) app.capo = recommendedCapo();
+    update();
+  };
+});
+$('tDown').onclick = () => { app.transpose = Math.max(-11, app.transpose - 1); update(); };
+$('tUp').onclick = () => { app.transpose = Math.min(11, app.transpose + 1); update(); };
+$('capo').onchange = (e) => { app.capo = Number(e.target.value); app.capoManual = true; update(); };
+app.showDiagrams = prefs.get('showDiagrams', true);
+$('showDiagrams').checked = app.showDiagrams;
+$('showDiagrams').onchange = (e) => { app.showDiagrams = e.target.checked; prefs.set('showDiagrams', app.showDiagrams); render(); };
+
+$('meter').onchange = () => { runDecode(); update(); };
+$('shiftBar').onclick = () => { app.phaseOffset = (app.phaseOffset + 1) % app.beatsPerBar; update(); };
+
+function askConfirm() {
+  return new Promise((resolve) => {
+    const dlg = $('confirmDlg');
+    const finish = (v) => { dlg.close(); resolve(v); };
+    $('confirmYes').onclick = () => finish(true);
+    $('confirmNo').onclick = () => finish(false);
+    dlg.oncancel = () => resolve(false);
+    dlg.showModal();
+  });
+}
+async function changeTempo(scale) {
+  if (!app.samples) return;
+  if ((app.overrides.size || app.charShift.size) && !(await askConfirm())) return;
+  app.tempoScale *= scale;
+  setProgress(0.05, '拍を取り直しています…');
+  try {
+    await runAudioFeatures();
+    app.overrides = new Map(); app.charShift = new Map(); app.phaseOffset = 0;
+    runDecode();
+    update();
+  } catch (e) { console.error(e); showError(e.message || '解析に失敗しました。'); }
+  $('progress').hidden = true;
+}
+$('tempoHalf').onclick = () => changeTempo(2);
+$('tempoDouble').onclick = () => changeTempo(0.5);
+
+document.querySelectorAll('.tabs [role=tab]').forEach((b) => { b.onclick = () => { app.view = b.dataset.view; render(); }; });
+$('print').onclick = () => window.print();
+// 他のページに埋め込まれていると印刷とダウンロードは止められるので、ボタンごと隠す
+if (window.self !== window.top) { $('print').hidden = true; $('saveTxt').hidden = true; }
+$('copyTxt').onclick = async (e) => {
+  const b = e.currentTarget, label = b.textContent;
+  try { await navigator.clipboard.writeText(exportText()); b.textContent = 'コピーしました'; }
+  catch (err) { b.textContent = 'コピーできませんでした'; }
+  setTimeout(() => { b.textContent = label; }, 2000);
+};
+function exportText() {
+  const opts = { transpose: app.transpose, capo: app.capo, flats: shapeFlats(), easy: isEasy() };
+  const flats = shapeFlats(), shift = app.transpose - app.capo;
+  const head = [app.title, `Key: ${keyLabel()}  /  ${Math.round(app.features.bpm)} BPM${app.capo ? `  /  Capo ${app.capo}` : ''}`].join('\n');
+  // 歌詞がある場合は [コード]歌詞 の形で書き出す
+  const lyricText = lyricCount() ? app.rows.map((row) => {
+    if (row.type === 'gap') return '';
+    if (row.type === 'section') return `【${row.text}】`;
+    return row.cells.map((c) => `[${CT.chordName(CT.shiftChord(c.chord, shift), flats)}]${c.text}`).join('');
+  }).join('\n') : '';
+  const text = `${head}\n\n${lyricText ? `[歌詞とコード]\n${lyricText}\n\n` : ''}[コード譜]\n${CT.renderChordText(app.bars, opts)}\n\n[TAB]\n${CT.renderTabText(app.bars, opts)}\n`;
+  return text;
+}
+$('saveTxt').onclick = () => {
+  const text = exportText();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/plain;charset=utf-8' }));
+  a.download = app.title.replace(/\.[^.]+$/, '') + '_chords.txt';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+</script>
+</body>
+</html>

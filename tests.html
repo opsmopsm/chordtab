@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>ChordTab tests</title>
+<style>body{font:14px/1.6 system-ui;padding:20px}pre{white-space:pre-wrap}.ok{color:#0a7a3b}.ng{color:#c0392b;font-weight:700}</style></head>
+<body><h1>ChordTab tests</h1><pre id="log">実行中…</pre>
+<script src="chordtab-core.js"></script>
+<script>
+const CT = window.ChordTab;
+const results = [];
+const check = (name, ok, detail) => results.push({ name, ok: !!ok, detail: detail === undefined ? '' : String(detail) });
+
+/** 拍ごとの正解率。root と quality の両方が一致した拍の割合 */
+function accuracy(features, decoded, truth) {
+  let hit = 0, rootHit = 0, total = 0;
+  features.beats.forEach((t, i) => {
+    const mid = t + 0.05;
+    const tr = truth.find((x) => mid >= x.start && mid < x.end);
+    if (!tr) return;
+    total++;
+    const c = decoded.beatChords[i];
+    if (c && c.root === tr.root) { rootHit++; if (c.q === tr.q) hit++; }
+  });
+  return { full: hit / total, root: rootHit / total, total };
+}
+
+async function audioCase(name, opts, minFull, minRoot) {
+  const song = CT.synthSong(opts);
+  const f = await CT.extractAudioFeatures(song.samples, song.sr);
+  const d = CT.decodeChords(f, { vocabulary: opts.vocabulary || 'standard' });
+  if (opts.expectKey) check(name + ' 調', CT.noteName(d.key.tonic) + ' ' + d.key.mode === opts.expectKey, d.key.mode);
+  const a = accuracy(f, d, song.truth);
+  const seq = CT.buildBars(d.beatChords, d.phase, d.beatsPerBar).slice(0, 8)
+    .map((b) => b.segments.map((s) => CT.chordName(s.chord, false)).join('/')).join(' | ');
+  const detail = `full=${a.full.toFixed(3)} root=${a.root.toFixed(3)} bpm=${f.bpm.toFixed(1)} tune=${f.tuningCents}c key=${CT.noteName(d.key.tonic)} ${d.key.mode} phase=${d.phase} :: ${seq}`;
+  check(name + ' 正解率', a.full >= minFull && a.root >= minRoot, detail);
+  if (opts.bpm) check(name + ' テンポ', Math.abs(f.bpm - opts.bpm) / opts.bpm < 0.04, f.bpm.toFixed(1));
+  return { f, d };
+}
+
+function writeMidi(division, events) {
+  // events: [{tick, bytes}] を 1 トラックの SMF にする
+  const body = [];
+  const vlq = (v) => { const out = [v & 0x7f]; while ((v >>= 7)) out.unshift((v & 0x7f) | 0x80); return out; };
+  let last = 0;
+  events.sort((a, b) => a.tick - b.tick).forEach((e) => { body.push(...vlq(e.tick - last), ...e.bytes); last = e.tick; });
+  body.push(0, 0xff, 0x2f, 0);
+  const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  return new Uint8Array([0x4d, 0x54, 0x68, 0x64, ...u32(6), 0, 1, 0, 1, division >> 8, division & 255,
+    0x4d, 0x54, 0x72, 0x6b, ...u32(body.length), ...body]).buffer;
+}
+
+(async function run() {
+  // 1. フォームの妥当性: 全 12 音 × 全種類で、鳴る音がコード構成音と一致する
+  let bad = [];
+  for (const q of Object.keys(CT.QUALITIES)) {
+    for (let r = 0; r < 12; r++) {
+      const v = CT.getVoicing(r, q);
+      const pcs = CT.voicingPitchClasses(v);
+      const iv = CT.QUALITIES[q].iv;
+      const tones = iv.map((i) => (r + i) % 12);
+      // 構成音以外は鳴らさない。省略してよいのは 7th コードの完全 5 度だけ(C7 の x32310 など)
+      const extra = [...pcs].some((pc) => !tones.includes(pc));
+      const missing = iv.filter((i) => !pcs.has((r + i) % 12) && !(i === 7 && iv.length === 4));
+      if (extra || missing.length) bad.push(`${CT.chordName({ root: r, q })}:${v.frets}`);
+    }
+  }
+  check('全フォームの構成音が正しい(12音×全種類)', bad.length === 0, bad.join(' '));
+
+  // 2. カポ提案
+  const eb = [[3, 'maj'], [8, 'maj'], [10, 'maj'], [0, 'min']].map(([root, q]) => ({ root, q }));
+  const rec = CT.recommendCapo(eb);
+  check('Eb 進行でカポを提案する', rec.capo > 0, 'capo=' + rec.capo);
+  const c = [[0, 'maj'], [5, 'maj'], [7, 'maj'], [9, 'min']].map(([root, q]) => ({ root, q }));
+  check('C 進行は F 含みでもカポを無理に勧めない or 妥当', CT.recommendCapo(c).capo <= 5, 'capo=' + CT.recommendCapo(c).capo);
+
+  // 3. 音声: きれいな伴奏
+  await audioCase('音声: ポップ進行(ドラム/メロ入り)', { bpm: 100 }, 0.85, 0.92);
+  await audioCase('音声: 速いテンポ', { bpm: 132, seed: 11 }, 0.8, 0.9);
+  await audioCase('音声: チューニングが +30c ずれた曲', { bpm: 92, detuneCents: 30, seed: 3 }, 0.8, 0.9);
+  await audioCase('音声: 短調の進行', { bpm: 110, seed: 5, expectKey: 'A minor', progression: [[9, 'min'], [5, 'maj'], [0, 'maj'], [4, 'maj']] }, 0.8, 0.9);
+  await audioCase('音声: 7th を含む進行', { bpm: 96, seed: 13, progression: [[2, 'm7'], [7, '7'], [0, 'maj7'], [9, 'm7']] }, 0.7, 0.85);
+  await audioCase('音声: 半音上の調(Ab)', { bpm: 104, seed: 17, progression: [[8, 'maj'], [1, 'maj'], [3, 'maj'], [5, 'min']] }, 0.8, 0.9);
+
+  await audioCase('音声: 2拍ごとにコードが変わる', { bpm: 88, seed: 19, beatsPerChord: 2, repeats: 12 }, 0.75, 0.85);
+  await audioCase('音声: ドラムなしのアルペジオ', { bpm: 84, seed: 23, drums: false, melody: false, arpeggio: true }, 0.7, 0.85);
+  await audioCase('音声: ノイズが乗った録音', { bpm: 118, seed: 29, noise: 0.05 }, 0.75, 0.85);
+  await audioCase('音声: シンプル語彙', { bpm: 104, seed: 31, vocabulary: 'simple' }, 0.85, 0.9);
+
+  // 4. MIDI
+  const ppq = 480, ev = [];
+  ev.push({ tick: 0, bytes: [0xff, 0x51, 3, 0x07, 0xa1, 0x20] }); // 120 BPM
+  ev.push({ tick: 0, bytes: [0xff, 0x58, 4, 3, 2, 24, 8] }); // 3/4
+  const prog = [[2, 'min'], [7, 'maj'], [0, 'maj'], [9, 'min']];
+  prog.forEach(([root, q], bar) => {
+    for (let b = 0; b < 3; b++) {
+      const st = (bar * 3 + b) * ppq, en = st + ppq - 10;
+      CT.QUALITIES[q].iv.forEach((i) => {
+        ev.push({ tick: st, bytes: [0x90, 60 + ((root + i) % 12), 90] });
+        ev.push({ tick: en, bytes: [0x80, 60 + ((root + i) % 12), 0] });
+      });
+      ev.push({ tick: st, bytes: [0x91, 36 + root, 100] });
+      ev.push({ tick: en, bytes: [0x81, 36 + root, 0] });
+      ev.push({ tick: st, bytes: [0x99, 36, 100] }); // ドラムは無視されるはず
+      ev.push({ tick: en, bytes: [0x89, 36, 0] });
+    }
+  });
+  const midi = CT.parseMidi(writeMidi(ppq, ev));
+  const mf = CT.extractMidiFeatures(midi);
+  const md = CT.decodeChords(mf, {});
+  const mBars = CT.buildBars(md.beatChords, md.phase, md.beatsPerBar);
+  const mNames = mBars.map((b) => b.segments.map((s) => CT.chordName(s.chord, false)).join('/')).join(' ');
+  check('MIDI: コード列', mNames === 'Dm G C Am', mNames);
+  check('MIDI: 3/4 と BPM を読む', mf.beatsPerBar === 3 && Math.round(mf.bpm) === 120, mf.beatsPerBar + ' ' + mf.bpm);
+  let threw = false;
+  try { CT.parseMidi(new ArrayBuffer(4)); } catch (e) { threw = true; }
+  check('MIDI: 壊れたデータでエラーになる', threw);
+
+  // 5. バー分割と TAB
+  const G = { root: 7, q: 'maj' }, C = { root: 0, q: 'maj' };
+  // phase=2: 3 拍目から小節が始まる曲。最初の 2 拍は前の小節の後半(弱起)、末尾の無音小節は消える
+  const bars = CT.buildBars([G, G, C, C, C, C, null, null, null, null, null, null, null], 2, 4);
+  check('弱起と前後の無音を処理する', bars.length === 2 && bars[0].segments[0].chord === null && bars[0].segments[0].len === 2 && bars[1].segments[0].len === 4, JSON.stringify(bars.map((b) => b.segments.map((s) => s.len))));
+  const tab = CT.renderTabText(CT.buildBars([G, G, G, G, C, C, G, G], 0, 4), { transpose: 0, capo: 0, flats: false });
+  const lines = tab.split('\n');
+  check('TAB: 7 行で各弦の長さが揃う', lines.length === 7 && new Set(lines.slice(1).map((l) => l.length)).size === 1, '\n' + tab);
+  check('TAB: G の 6 弦 3 フレット', lines[6].startsWith('E|-3'), lines[6]);
+  const capoTab = CT.renderTabText(CT.buildBars([{ root: 3, q: 'maj' }, { root: 3, q: 'maj' }], 0, 2), { transpose: 0, capo: 3, flats: false });
+  check('カポ 3 で Eb は C のフォームになる', capoTab.startsWith('   C') && capoTab.includes('A|-3'), '\n' + capoTab);
+  const text = CT.renderChordText(CT.buildBars([G, G, C, C], 0, 4), { transpose: 2, capo: 0, flats: false });
+  check('移調が反映される', text.includes('A D'), text);
+  check('フラットの調では b 表記', CT.usesFlats(3, 'major') && CT.usesFlats(0, 'minor') && !CT.usesFlats(7, 'major'));
+
+  // 6. 難易度
+  let badEasy = [];
+  for (const q of ['maj', 'min']) for (let r = 0; r < 12; r++) {
+    const v = CT.getVoicing(r, q, true);
+    const pcs = CT.voicingPitchClasses(v);
+    const tones = CT.QUALITIES[q].iv.map((i) => (r + i) % 12);
+    if ([...pcs].some((p) => !tones.includes(p)) || tones.some((p) => !pcs.has(p)) || v.barre) badEasy.push(CT.chordName({ root: r, q }) + ':' + v.frets);
+  }
+  check('初級フォームは構成音が正しくセーハなし', badEasy.length === 0, badEasy.join(' '));
+  const F = { root: 5, q: 'maj' }, D7 = { root: 2, q: '7' }, Am7 = { root: 9, q: 'm7' };
+  const easy = CT.applyDifficulty([C, C, C, D7, G, G, Am7, Am7], 'easy');
+  check('初級: 7th を外し 1 拍のコードをまとめる', easy.map((c) => CT.chordName(c)).join() === 'C,C,C,C,G,G,Am,Am', easy.map((c) => CT.chordName(c)).join());
+  check('中級: 7th は残し aug は外す', CT.simplifyChord(D7, 'mid').q === '7' && CT.simplifyChord({ root: 0, q: 'aug' }, 'mid').q === 'maj');
+  check('上級: そのまま', CT.simplifyChord({ root: 0, q: 'aug' }, 'hard').q === 'aug');
+
+  // 7. 歌詞(テスト用のダミー文)
+  const parsed = CT.parseLyrics('[ar:someone]\n[00:12.50]あいうえお\n\n【サビ】\nかきくけこ\n');
+  check('歌詞: LRC の時刻・空行・見出しを読む', parsed.length === 4 && parsed[0].time === 12.5 && parsed[1].kind === 'blank' && parsed[2].kind === 'section' && parsed[2].text === 'サビ' && parsed[3].time === null, JSON.stringify(parsed));
+  const beats16 = Array.from({ length: 48 }, (_, i) => i * 0.5); // 0.5 秒/拍 × 48 拍
+  const prog16 = []; for (const ch of [C, G, F, C, null, null].concat([G, C, F, G, C, G])) for (let i = 0; i < 4; i++) prog16.push(ch);
+  const textA = 'あいうえおかきくけこ', textB = 'さしすせそたちつてと';
+  const layout = CT.buildLyricLayout({ beatChords: prog16, beats: beats16, lines: CT.parseLyrics(`[00:02.00]${textA}\n[00:12.00]${textB}`), duration: 24, phase: 0, beatsPerBar: 4 });
+  const lyricRows = layout.filter((r) => r.type === 'lyric');
+  check('歌詞: 2 行とも文字が欠けずに並ぶ', lyricRows.length === 2 && lyricRows[0].cells.map((c) => c.text).join('') === textA && lyricRows[1].cells.map((c) => c.text).join('') === textB, JSON.stringify(lyricRows.map((r) => r.cells.map((c) => CT.chordName(c.chord) + ':' + c.text))));
+  check('歌詞: 行頭のコードが正しい', CT.chordName(lyricRows[0].cells[0].chord) === 'G' && CT.chordName(lyricRows[1].cells[0].chord) === 'G', '2.0秒=5拍目=G、12.0秒=25拍目=G');
+  check('歌詞: 前奏はコードだけの行になる', layout[0].type === 'chords' && CT.chordName(layout[0].cells[0].chord) === 'C');
+  const shifted = CT.buildLyricLayout({ beatChords: prog16, beats: beats16, lines: CT.parseLyrics(`[00:02.00]${textA}`), duration: 24, phase: 0, beatsPerBar: 4, charShift: new Map([[8, 2]]) }); // 8 拍目から始まる 2 番目のセル(F)を 2 文字後ろへ
+  const baseRow = CT.buildLyricLayout({ beatChords: prog16, beats: beats16, lines: CT.parseLyrics(`[00:02.00]${textA}`), duration: 24, phase: 0, beatsPerBar: 4 }).find((r) => r.type === 'lyric');
+  const shiftRow = shifted.find((r) => r.type === 'lyric');
+  check('歌詞: コードの位置を文字単位でずらせる', shiftRow.cells[0].text.length === baseRow.cells[0].text.length + 2, baseRow.cells[0].text + ' → ' + shiftRow.cells[0].text);
+  const untimed = CT.buildLyricLayout({ beatChords: prog16, beats: beats16, lines: CT.parseLyrics(`${textA}\n${textB}`), duration: 24, phase: 0, beatsPerBar: 4 }).filter((r) => r.type === 'lyric');
+  check('歌詞: タイミング未設定でも均等に割り振る', untimed.length === 2 && untimed[1].time > untimed[0].time, untimed.map((r) => r.time.toFixed(1)).join());
+  const noLyric = CT.buildLyricLayout({ beatChords: prog16, beats: beats16, lines: [], duration: 24, phase: 0, beatsPerBar: 4 });
+  check('歌詞なしでも 4 小節ごとのコード行が出る', noLyric.length >= 2 && noLyric.every((r) => r.type === 'chords'), noLyric.length);
+  check('横向きの図を描ける', CT.diagramSVG(F, false, { horizontal: true, easy: true }).includes('diagram-h'));
+
+  const fail = results.filter((r) => !r.ok).length;
+  window.testResults = { fail, total: results.length, results };
+  document.getElementById('log').innerHTML = `${results.length - fail}/${results.length} 件成功\n\n` + results.map((r) =>
+    `<span class="${r.ok ? 'ok' : 'ng'}">${r.ok ? 'OK' : 'NG'}</span> ${r.name}${r.detail ? ' — ' + r.detail : ''}`).join('\n');
+})().catch((e) => { window.testResults = { crash: String(e.stack || e) }; document.getElementById('log').textContent = String(e.stack || e); });
+</script>
+</body></html>
